@@ -47,6 +47,7 @@ String ATMOS22::begin(time_t time, bool &criticalFault, bool &fault)
 String ATMOS22::selfDiagnostic(uint8_t diagnosticLevel, time_t time)
 {
 	if(getSensorPort() == 0) throwError(FIND_FAIL); //If no port found, report failure
+	else if(isPresent() == false) throwError(DETECT_FAIL); //If sensor port is good, but fail to detect sensor, throw error 
 	String output = "\"METER Wind\":{";
 	if(diagnosticLevel == 0) {
 		//TBD
@@ -79,41 +80,47 @@ String ATMOS22::selfDiagnostic(uint8_t diagnosticLevel, time_t time)
 		// String output = selfDiagnostic(5); //Call the lower level of self diagnostic 
 		// output = output.substring(0,output.length() - 1); //Trim off closing brace
 		output = output + "\"lvl-4\":{"; //OPEN JSON BLOB
-		uint8_t adr = (talon.sendCommand("?!")).toInt(); //Get address of local device 
-		String stat = talon.command("M1", adr);
-		Serial.print("STAT: "); //DEBUG!
-		Serial.println(stat);
+		if(getSensorPort() != 0 && isPresent() == true) { //Test as normal
+			uint8_t adr = (talon.sendCommand("?!")).toInt(); //Get address of local device 
+			String stat = talon.command("M1", adr);
+			Serial.print("STAT: "); //DEBUG!
+			Serial.println(stat);
 
-		delay(1000); //Wait 1 second to get data back //FIX! Wait for newline??
-		String data = talon.command("D0", adr);
-		Serial.print("DATA: "); //DEBUG!
-		Serial.println(data);
-		float angles[2] = {0};
-		data.remove(0,2); //Trim leading address and +
-		for(int i = 0; i < 2; i++) { //Parse string into floats -- do this to run tests on the numbers themselves and make sure formatting is clean
-			if(indexOfSep(data) > 0) {
-				angles[i] = (data.substring(0, indexOfSep(data))).toFloat();
-				Serial.println(data.substring(0, indexOfSep(data))); //DEBUG!
-				data.remove(0, indexOfSep(data) + 1); //Delete leading entry
+			delay(1000); //Wait 1 second to get data back //FIX! Wait for newline??
+			String data = talon.command("D0", adr);
+			Serial.print("DATA: "); //DEBUG!
+			Serial.println(data);
+			float angles[2] = {0};
+			data.remove(0,2); //Trim leading address and +
+			for(int i = 0; i < 2; i++) { //Parse string into floats -- do this to run tests on the numbers themselves and make sure formatting is clean
+				if(indexOfSep(data) > 0) {
+					angles[i] = (data.substring(0, indexOfSep(data))).toFloat();
+					Serial.println(data.substring(0, indexOfSep(data))); //DEBUG!
+					data.remove(0, indexOfSep(data) + 1); //Delete leading entry
+				}
+				else {
+					data.trim(); //Trim off trailing characters
+					angles[i] = data.toFloat();
+				}
 			}
-			else {
-				data.trim(); //Trim off trailing characters
-				angles[i] = data.toFloat();
-			}
+			// float angle = (data.trim()).toFloat();
+			output = output + "\"XAngle\":" + String(angles[0]) + ",\"YAngle\":" + String(angles[1]);
+			output = output + "},"; //CLOSE JSON BLOB
+			// return output + ",\"Pos\":[" + String(port) + "]}}";
+			// return output;
 		}
-		// float angle = (data.trim()).toFloat();
-		output = output + "\"XAngle\":" + String(angles[0]) + ",\"YAngle\":" + String(angles[1]);
-		output = output + "},"; //CLOSE JSON BLOB
-		// return output + ",\"Pos\":[" + String(port) + "]}}";
-		// return output;
+		else output = output + "\"XAngle\":null,\"YAngle\":null},";
 
 	}
 
 	if(diagnosticLevel <= 5) {
 		output = output + "\"lvl-5\":{"; //OPEN JSON BLOB
-		uint8_t adr = (talon.sendCommand("?!")).toInt(); //Get address of local device 
-		output = output + "\"Adr\":" + String(adr);
-		output = output + "}"; //Close pair
+		if(getSensorPort() != 0 && isPresent() == true) { //Test as normal
+			uint8_t adr = (talon.sendCommand("?!")).toInt(); //Get address of local device 
+			output = output + "\"Adr\":" + String(adr);
+			output = output + "}"; //Close pair
+		}
+		else output = output + "\"Adr\":null}";
 		
 	}
 	return output + ",\"Pos\":[" + getTalonPortString() + "," + getSensorPortString() + "]}"; //Write position in logical form - Return compleated closed output
@@ -181,63 +188,74 @@ String ATMOS22::getMetadata()
 
 String ATMOS22::getData(time_t time)
 {
-	uint8_t adr = (talon.sendCommand("?!")).toInt(); //Get address of local device 
-	String stat = talon.command("M", adr);
-	Serial.print("STAT: "); //DEBUG!
-	Serial.println(stat);
-
-	delay(1000); //Wait 1 second to get data back //FIX! Wait for newline??
-	String data = talon.command("D0", adr);
-	Serial.print("DATA: "); //DEBUG!
-	Serial.println(data);
-
 	String output = "\"METER Wind\":{"; //OPEN JSON BLOB
+	bool readDone = false;
+	if(getSensorPort() != 0) { //Check both for detection 
+		for(int i = 0; i < talon.retryCount; i++) {
+			if(!isPresent()) continue; //If presence check fails, try again
+			uint8_t adr = (talon.sendCommand("?!")).toInt(); //Get address of local device 
+			String stat = talon.command("M", adr);
+			Serial.print("STAT: "); //DEBUG!
+			Serial.println(stat);
 
-	float sensorData[3] = {0.0}; //Store the 3 vals from the sensor in float form
-	if((data.substring(0, data.indexOf("+"))).toInt() != adr) { //If address returned is not the same as the address read, throw error
-		Serial.println("ADDRESS MISMATCH!"); //DEBUG!
-		//Throw error!
-	}
-	data.remove(0, 2); //Delete address from start of string
-	for(int i = 0; i < 3; i++) { //Parse string into floats -- do this to run tests on the numbers themselves and make sure formatting is clean
-		if(indexOfSep(data) > 0) {
-			sensorData[i] = (data.substring(0, indexOfSep(data))).toFloat();
-			Serial.println(data.substring(0, indexOfSep(data))); //DEBUG!
-			data.remove(0, indexOfSep(data) + 1); //Delete leading entry
+			delay(1000); //Wait 1 second to get data back //FIX! Wait for newline??
+			String data = talon.command("D0", adr);
+			Serial.print("DATA: "); //DEBUG!
+			Serial.println(data);
+
+			
+
+			float sensorData[3] = {0.0}; //Store the 3 vals from the sensor in float form
+			if((data.substring(0, data.indexOf("+"))).toInt() != adr) { //If address returned is not the same as the address read, throw error
+				Serial.println("ADDRESS MISMATCH!"); //DEBUG!
+				//Throw error!
+			}
+			data.remove(0, 2); //Delete address from start of string
+			for(int i = 0; i < 3; i++) { //Parse string into floats -- do this to run tests on the numbers themselves and make sure formatting is clean
+				if(indexOfSep(data) > 0) {
+					sensorData[i] = (data.substring(0, indexOfSep(data))).toFloat();
+					Serial.println(data.substring(0, indexOfSep(data))); //DEBUG!
+					data.remove(0, indexOfSep(data) + 1); //Delete leading entry
+				}
+				else {
+					data.trim(); //Trim off trailing characters
+					sensorData[i] = data.toFloat();
+				}
+			}
+
+			data = talon.command("D1", adr); //Grab temp value
+			data.remove(0, 2); //Delete address from start of string
+			float temp = 0;
+			if(indexOfSep(data) > 0) {
+				temp = (data.substring(0, indexOfSep(data))).toFloat();
+				// Serial.println(data.substring(0, indexOfSep(data))); //DEBUG!
+				// data.remove(0, indexOfSep(data) + 1); //Delete leading entry
+			}
+			// else {
+			//     data.trim(); //Trim off trailing characters
+			//     sensorData[i] = data.toFloat();
+			// }
+
+
+			
+			// for(int i = 0; i < 3; i++) { //Parse string into floats -- do this to run tests on the numbers themselves and make sure formatting is clean
+				// if(data.indexOf("+") > 0) {
+				// 	sensorData[i] = (data.substring(0, data.indexOf("+"))).toFloat();
+				// 	Serial.println(data.substring(0, data.indexOf("+"))); //DEBUG!
+				// 	data.remove(0, data.indexOf("+") + 1); //Delete leading entry
+				// }
+				// else {
+				// 	data.trim(); //Trim off trailing characters
+				// 	sensorData[i] = data.toFloat();
+				// }
+			// }
+			output = output + "\"Wind Speed\":" + String(sensorData[0]) + ",\"Wind Direction\":" + String(sensorData[1]) + ",\"Gust Speed\":" + String(sensorData[2]) + ",\"Temperature\":" + String(temp); //Concatonate data
+			readDone = true; //Set flag
+			break; //Stop retry if appended 
 		}
-		else {
-			data.trim(); //Trim off trailing characters
-			sensorData[i] = data.toFloat();
-		}
 	}
-
-    data = talon.command("D1", adr); //Grab temp value
-	data.remove(0, 2); //Delete address from start of string
-    float temp = 0;
-    if(indexOfSep(data) > 0) {
-        temp = (data.substring(0, indexOfSep(data))).toFloat();
-        // Serial.println(data.substring(0, indexOfSep(data))); //DEBUG!
-        // data.remove(0, indexOfSep(data) + 1); //Delete leading entry
-    }
-    // else {
-    //     data.trim(); //Trim off trailing characters
-    //     sensorData[i] = data.toFloat();
-    // }
-
-
-    
-	// for(int i = 0; i < 3; i++) { //Parse string into floats -- do this to run tests on the numbers themselves and make sure formatting is clean
-		// if(data.indexOf("+") > 0) {
-		// 	sensorData[i] = (data.substring(0, data.indexOf("+"))).toFloat();
-		// 	Serial.println(data.substring(0, data.indexOf("+"))); //DEBUG!
-		// 	data.remove(0, data.indexOf("+") + 1); //Delete leading entry
-		// }
-		// else {
-		// 	data.trim(); //Trim off trailing characters
-		// 	sensorData[i] = data.toFloat();
-		// }
-	// }
-	output = output + "\"Wind Speed\":" + String(sensorData[0]) + ",\"Wind Direction\":" + String(sensorData[1]) + ",\"Gust Speed\":" + String(sensorData[2]) + ",\"Temperature\":" + String(temp); //Concatonate data
+	if(getSensorPort() == 0 || readDone == false) output = output + "\"Wind Speed\":null,\"Wind Direction\":null,\"Gust Speed\":null,\"Temperature\":null"; //Otherwise generate null report 
+	if(readDone == false) throwError(talon.SDI12_READ_FAIL);
 	// String dps368Data = "\"DPS368\":{\"Temperature\":"; //Open dps368 substring
 	// String sht3xData = "\"SHT31\":{\"Temperature\":"; //Open SHT31 substring //FIX! How to deal with SHT31 vs SHT35?? Do we deal with it at all
 
